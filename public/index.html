@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>JSON Interpreter & Specificator</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <h1>JSON Interpreter & Specificator</h1>
+
+  <textarea id="jsonInput" placeholder="Paste your JSON here..."></textarea>
+
+  <div class="buttons">
+    <button id="interpretBtn">Interpret JSON</button>
+    <button id="specifyBtn" disabled>Turn Interpretation to Specification</button>
+  </div>
+
+  <div id="output">
+    <h2>Interpretation</h2>
+    <div id="interpretation"></div>
+  </div>
+
+  <div id="warnings">
+    <h2>Warnings</h2>
+    <ul id="warningsList"></ul>
+  </div>
+
+  <div id="specSection" style="display:none;">
+    <h2>Specification</h2>
+    <pre id="specOutput"></pre>
+    <button id="downloadSpec">Download Spec</button>
+  </div>
+
+  <!-- Only import app.js; it will import interpreter & specificator -->
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
