@@ -91,7 +91,7 @@ export function interpretJson(jsonText) {
 
         // --- Flow Logic (State Change vs. State View) ---
         if (slice.sliceType === 'STATE_VIEW') {
-            // Flow for ReadModel slices: Event (inbound) -> ReadModel -> Screen (outbound)
+            // ... (STATE_VIEW logic remains unchanged)
             
             // 1. Identify Events that ADD to the list (INBOUND dependency on the ReadModel)
             const inboundEvents = events.filter(e =>
@@ -134,15 +134,15 @@ export function interpretJson(jsonText) {
             if (isTodoListProjection) {
                  // Add the completion event to the flow array (needed for the flow visualization logic below)
                  flow.push(
-                    ...todoEvents.map(e => ({ 
-                        type: "EVENT", 
-                        title: e.title, 
-                        description: `Event that completes/removes an item from ${primaryReadModel.title}`
-                    }))
+                     ...todoEvents.map(e => ({ 
+                         type: "EVENT", 
+                         title: e.title, 
+                         description: `Event that completes/removes an item from ${primaryReadModel.title}`
+                     }))
                  );
                  
-                // Change the warning to an interpreter note on the pattern
-                result.warnings.push(`INTERPRETER NOTE: ReadModel "${primaryReadModel.title}" is a **To-Do List Projection**, consuming at least two events: an ADD event (${inboundEvents.map(e => e.title).join(", ")}) and a REMOVE/DONE event (${todoEvents.map(e => e.title).join(", ")} via OUTBOUND back-link to ReadModel).`);
+                 // Change the warning to an interpreter note on the pattern
+                 result.warnings.push(`INTERPRETER NOTE: ReadModel "${primaryReadModel.title}" is a **To-Do List Projection**, consuming at least two events: an ADD event (${inboundEvents.map(e => e.title).join(", ")}) and a REMOVE/DONE event (${todoEvents.map(e => e.title).join(", ")} via OUTBOUND back-link to ReadModel).`);
             }
 
             // Detailed ReadModel info for output
@@ -164,7 +164,7 @@ export function interpretJson(jsonText) {
             // Determine if this slice contains a "Completion Event"
             // We'll use case-insensitive checks for 'Prepared' or 'Completed' in commands or events.
             const isCompletionSlice = commands.some(c => c.title.toLowerCase().includes('prepared') || c.title.toLowerCase().includes('mark')) 
-                                   || events.some(e => e.title.toLowerCase().includes('prepared') || e.title.toLowerCase().includes('completed'));
+                                         || events.some(e => e.title.toLowerCase().includes('prepared') || e.title.toLowerCase().includes('completed'));
 
             // Standard Command/Event flow: Screen (inbound) -> Command -> Event (outbound)
             flow.push(
@@ -180,7 +180,35 @@ export function interpretJson(jsonText) {
                     return { type: "EVENT", title: title, description: e.description || "Event triggered" };
                 })
             );
-        } else {
+        } 
+        
+        // **********************************************
+        // CRITICAL ADDITION: Handle 'AUTOMATION' slice type
+        // **********************************************
+        else if (slice.sliceType === 'AUTOMATION') { 
+             
+            // Flow: External Event (inbound) -> Command -> Event (outbound)
+            // No screens are expected in a pure automation slice
+            flow.push(
+                // In an automation flow, the external event acts as the trigger (like a screen/command initiation)
+                ...events.filter(e => e.dependencies.some(d => d.type === 'EXTERNAL')).map(e => ({ 
+                    type: "EVENT", 
+                    title: `**EXTERNAL:** ${e.title}`, // Mark the triggering event
+                    description: e.description || "External system trigger" 
+                })),
+                ...commands.map(c => ({ type: "COMMAND", title: c.title, description: c.description || "System Command executed" })),
+                ...events.filter(e => !e.dependencies.some(d => d.type === 'EXTERNAL')).map(e => ({ 
+                    type: "EVENT", 
+                    title: e.title, 
+                    description: e.description || "System Event triggered" 
+                }))
+            );
+            
+            result.warnings.push(`INTERPRETER NOTE: Slice "${slice.title || 'Unknown'}" is an **AUTOMATION** slice, triggered by an external event.`);
+        } 
+        // **********************************************
+        
+        else {
              // Fallback/Legacy Flow (use what's available)
              flow.push(
                  ...screens.map(s => ({ type: "SCREEN", title: s.title })),
@@ -191,6 +219,7 @@ export function interpretJson(jsonText) {
         }
 
         // --- Visual Flow String Generation (with To-Do List Fix) ---
+        // ... (This section remains largely the same, but the 'AUTOMATION' slice will use the Generic Flow construction.)
         let visualFlow = "";
         
         if (slice.sliceType === 'STATE_VIEW' && isTodoListProjection && primaryReadModel && todoEvents.length > 0) {
@@ -229,7 +258,7 @@ export function interpretJson(jsonText) {
             }
             
         } else {
-            // Generic Flow Construction (for STATE_CHANGE and non-To-Do STATE_VIEW)
+            // Generic Flow Construction (for STATE_CHANGE, AUTOMATION, and non-To-Do STATE_VIEW)
             const flowTitlesSeen = new Set();
             visualFlow = flow
                 .filter(f => {
@@ -241,7 +270,10 @@ export function interpretJson(jsonText) {
                 .join(" ➜ ");
         }
 
+
         // --- Robust BDD tests implementation (Handling all formats) ---
+        // ... (This section remains unchanged as it processes all 'specs' regardless of slice type)
+
         const bddTests = specs.map(spec => {
             
             const mapSteps = (steps) => {

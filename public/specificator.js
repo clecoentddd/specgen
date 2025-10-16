@@ -1,6 +1,10 @@
 // specificator.js
 export function generateSpecification(interpretation) {
+
+  
   const spec = {
+
+    
     // Proposed file structure for Node.js / browser in-memory event-sourced app
     fileStructure: {
       "src": {
@@ -16,6 +20,16 @@ export function generateSpecification(interpretation) {
     },
     // Developer / architectural notes
     developerNotes: [
+      {
+        purpose: "AI Constraints & Self-Verification",
+        description: "The following items represent the strict architectural constraints applied to this specification. The LLM confirms compliance with these points.",
+        recommendations: [
+          "Is the proposed architecture and data flow **completely confined to the browser** (i.e., no server, no database, only in-memory structures)? **(Y/N)**",
+          "Does the solution strictly follow the **Event-Command-ReadModel** pattern (a form of CQRS/Event Sourcing)? **(Y/N)**",
+          "Are there **NO** references to backend/server-side code (e.g., Express, databases, REST APIs, etc.) that contradict the in-browser constraint? **(Y/N)**",
+          "Have all slices been correctly categorized as either 'STATE_CHANGE' (Command/Event) or 'VIEW' (Projection/Read Model)? **(Y/N)**"
+        ]
+      },
       {
         purpose: "Software Architecture Overview",
         description: "This is an in-browser only one-page app. All slices and events are managed via an in-memory event store. The UI displays the event stream from latest to first events, and each projection can be rebuilt independently.",
