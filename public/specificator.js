@@ -42,24 +42,7 @@ export function generateSpecification(interpretation) {
       spec.fileStructure.src.slices[folderName] = {};
     }
 
-    if (isStateChange) {
-      // State change slice: has commands and commandHandlers
-      spec.fileStructure.src.slices[folderName] = {
-        "command.js": "// Defines command structure",
-        "commandHandler.js": "// Handles command logic",
-        "ui.js": "// Optional UI specific to this slice"
-      };
-    } else {
-      // View slice: projections and event handlers
-      spec.fileStructure.src.slices[folderName] = {
-        "eventHandler.js": "// Reacts to domain events",
-        "projection.js": "// Builds a view projection",
-        "ui.js": "// Optional UI specific to this slice"
-      };
-    }
-
-    // Developer notes per slice
-    spec.developerNotes.push({
+    const sliceNotes = {
       slice: slice.title,
       type: slice.sliceType,
       summary: `Implements ${isStateChange ? "business command/event logic" : "read model projection"}.`,
@@ -68,9 +51,38 @@ export function generateSpecification(interpretation) {
         "Tag each event with projections that consume it to simplify replay.",
         "Keep slice self-contained: command/event handling and slice-specific UI.",
         "Implement BDD tests per slice: start with provided specifications and expand coverage with additional scenarios, including edge cases, invalid inputs, and multi-event sequences."
-  
       ]
-    });
+    };
+
+    if (isStateChange) {
+      // State change slice: has commands and commandHandlers
+      spec.fileStructure.src.slices[folderName] = {
+        "command.js": "// Defines command structure",
+        "commandHandler.js": "// Handles command logic",
+        "ui.js": "// Optional UI specific to this slice"
+      };
+    } else {
+      // View slice (Read Model): projections and event handlers
+      // UPDATED: Use a handlers folder for multi-event projections (To-Do List Pattern)
+      spec.fileStructure.src.slices[folderName] = {
+        "handlers": {
+          "event-handler-registrar.js": "// Subscribes all specific handlers to the event bus.",
+          "handleEventName.js": "// Separate handler for each event consumed by the projection."
+        },
+        "projection.js": "// Builds a view projection (the list itself)",
+        "ui.js": "// Optional UI specific to this slice"
+      };
+
+      // UPDATED: Add specific To-Do Pattern recommendation for VIEW slices
+      if (slice.title.toLowerCase().includes('list of')) {
+        sliceNotes.recommendations.push(
+          "**To-Do List Pattern:** This Read Model must subscribe to **at least two** event types: one that marks the item as 'to-do' (ADD) and one that marks it as 'done' (REMOVE). The list state is keyed by a **unique ID** (e.g., `orderId` or `itemId`) found in both event payloads to reconcile the item's state."
+        );
+      }
+    }
+
+    // Add the notes for the current slice
+    spec.developerNotes.push(sliceNotes);
   });
 
   return spec;

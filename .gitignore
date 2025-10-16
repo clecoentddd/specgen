@@ -1,0 +1,12 @@
+# Node modules
+node_modules/
+
+# Logs
+*.log
+
+# Build or output folders
+dist/
+build/
+
+# Lock files if you want
+package-lock.json

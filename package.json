@@ -1,0 +1,13 @@
+{
+  "name": "json-spec-app",
+  "version": "1.0.0",
+  "description": "One-page JSON interpretation and specification tool",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
