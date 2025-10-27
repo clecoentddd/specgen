@@ -1,5 +1,3 @@
-// interpreter.js
-
 /**
  * Helper to process fields into a concatenated string (name=example, ...)
  * @param {Array<Object>} fields - The fields array from a Command, Event, or ReadModel.
@@ -8,20 +6,18 @@
 const formatFields = (fields) => {
     if (!fields || fields.length === 0) return '(none)';
     return fields.map(field => {
-        // Ensure field exists and has a name before trying to access example
         const name = field && field.name ? String(field.name) : '';
         if (!name) return '';
-        
-        // Use example if available, converting it to a string and removing quotes, otherwise use empty string
+
         const value = field.example !== undefined && field.example !== null 
             ? String(field.example).replace(/"/g, '') 
             : '';
             
         return `${name}=${value}`;
-    }).filter(s => s.length > 0).join(', '); // Filter out any empty strings from malformed fields
+    }).filter(s => s.length > 0).join(', ');
 };
 
-// -----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------- 
 
 /**
  * Processes the 'examples' array for BDD Read Model steps (list results) or any list data.
@@ -30,28 +26,52 @@ const formatFields = (fields) => {
  */
 const formatReadModelExamples = (examples) => {
     if (!examples || examples.length === 0) return '(none)';
-    
-    // Convert each example object into a "field=value, field2=value" string
+
     const formattedExamples = examples.map(example => {
-        // Handle example being a simple value (e.g., if array of primitives) or an object
         if (typeof example !== 'object' || example === null || Array.isArray(example)) {
-             // If it's not a standard object, stringify it
              return `(${String(example).replace(/"/g, '')})`;
         }
 
         const fields = Object.entries(example).map(([key, value]) => {
-            // Remove surrounding quotes from the example value
             return `${key}=${String(value).replace(/"/g, '')}`;
         }).join(', ');
         return `(${fields})`;
     });
 
-    // Join the multiple example objects with a semicolon
     return formattedExamples.join('; ');
 };
 
-// -----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------- 
 
+/**
+ * Find all events across all slices by their IDs
+ */
+const buildEventLookup = (slices) => {
+    const lookup = {};
+    slices.forEach(slice => {
+        (slice.events || []).forEach(event => {
+            lookup[event.id] = event;
+        });
+    });
+    return lookup;
+};
+
+/**
+ * Find all elements across all slices by their IDs
+ */
+const buildElementLookup = (slices) => {
+    const lookup = {};
+    slices.forEach(slice => {
+        ['commands', 'events', 'readmodels', 'screens'].forEach(elementType => {
+            (slice[elementType] || []).forEach(element => {
+                lookup[element.id] = element;
+            });
+        });
+    });
+    return lookup;
+};
+
+// ----------------------------------------------------------------------------- 
 
 export function interpretJson(jsonText) {
     const result = {
@@ -72,262 +92,209 @@ export function interpretJson(jsonText) {
         result.warnings.push("Missing 'slices' array in root object.");
         return result;
     }
+    
+    // Build lookup tables for cross-slice references
+    const eventLookup = buildEventLookup(data.slices);
+    const elementLookup = buildElementLookup(data.slices);
+    
+    // Global Sets to track unique internal and external events by title
+    const uniqueEventTitles = new Set();
+    const uniqueExternalEventTitles = new Set();
 
     // Process each slice
     const sliceSummaries = data.slices.map((slice, index) => {
         // Safely retrieve properties, defaulting to empty arrays
         const commands = slice.commands || [];
-        const events = slice.events || [];
         const screens = slice.screens || [];
         const readmodels = slice.readmodels || [];
         const specs = slice.specifications || [];
 
+        // Track screens already used in this slice
+        const usedScreenIds = new Set();
+
+        // Process events to correctly title and filter
+        const processedEvents = (slice.events || []).map(e => {
+            const isExternal = e.context === 'EXTERNAL';
+            const title = isExternal ? `**EXTERNAL:** ${e.title}` : e.title;
+            if (isExternal) uniqueExternalEventTitles.add(e.title);
+            else uniqueEventTitles.add(e.title);
+            return { ...e, isExternal, title };
+        });
+
+        const internalEvents = processedEvents.filter(e => !e.isExternal);
+        const externalEvents = processedEvents.filter(e => e.isExternal);
+        const events = processedEvents;
+
+        // --- Flow Logic ---
         let flow = [];
-        let readmodelDetails = null; 
-        
+        let readmodelDetails = null;
         let isTodoListProjection = false;
         let primaryReadModel = readmodels.length > 0 ? readmodels[0] : null;
-        let todoEvents = []; 
+        let todoEvents = [];
 
-        // --- Flow Logic (State Change vs. State View) ---
         if (slice.sliceType === 'STATE_VIEW') {
-            // ... (STATE_VIEW logic remains unchanged)
-            
-            // 1. Identify Events that ADD to the list (INBOUND dependency on the ReadModel)
-            const inboundEvents = events.filter(e =>
-                e.dependencies.some(d => d.elementType === 'READMODEL' && d.type === 'INBOUND')
-            );
+            if (!primaryReadModel) {
+                result.warnings.push(`STATE_VIEW slice "${slice.title}" has no ReadModel defined.`);
+            } else {
+                const inboundEventIds = new Set();
+                const outboundEventIds = new Set();
 
-            const outboundScreens = screens.filter(s =>
-                s.dependencies.some(d => d.elementType === 'READMODEL' && d.type === 'OUTBOUND')
-            );
+                // ReadModel dependencies
+                (primaryReadModel.dependencies || []).forEach(dep => {
+                    if (dep.elementType === 'EVENT' && dep.type === 'INBOUND') inboundEventIds.add(dep.id);
+                    if (dep.elementType === 'EVENT' && dep.type === 'OUTBOUND') outboundEventIds.add(dep.id);
+                });
 
-            // 2. Identify Events that REMOVE from/COMPETE the list (OUTBOUND back-dependency on the ReadModel)
-            // This is the signal for the "Todo List" pattern (the back-flow arrow)
-            todoEvents = events.filter(e =>
-                primaryReadModel &&
-                e.dependencies.some(d => d.elementType === 'READMODEL' && d.type === 'OUTBOUND' && d.id === primaryReadModel.id)
-            );
-            
-            // Determine if this is a To-Do List Projection
-            isTodoListProjection = todoEvents.length > 0;
-            const rmDescription = isTodoListProjection 
-                ? "State projection / **TODO list (Two-event pattern)**" // Highlight the pattern
-                : "State projection / User view";
-            
-            const rmTitle = primaryReadModel 
-                ? (isTodoListProjection ? `**TODO:** ${primaryReadModel.title}` : primaryReadModel.title) 
-                : "ReadModel";
+                // Check all events pointing to this ReadModel
+                Object.values(eventLookup).forEach(event => {
+                    (event.dependencies || []).forEach(dep => {
+                        if (dep.elementType === 'READMODEL' && dep.id === primaryReadModel.id && dep.type === 'OUTBOUND') {
+                            inboundEventIds.add(event.id);
+                        }
+                    });
+                });
 
+                const inboundEvents = Array.from(inboundEventIds)
+                    .map(id => eventLookup[id] || elementLookup[id])
+                    .filter(e => e);
+                const outboundEvents = Array.from(outboundEventIds)
+                    .map(id => eventLookup[id] || elementLookup[id])
+                    .filter(e => e);
 
-            // Build Flow: EVENT ➜ READMODEL ➜ SCREEN
-            flow.push(
-                ...inboundEvents.map(e => ({ type: "EVENT", title: e.title, description: e.description || "Input event" })),
-                ...primaryReadModel ? [{ 
-                    type: "READMODEL", 
-                    title: rmTitle, // Use the highlighted title
-                    description: rmDescription // Use the specific description
-                }] : [],
-                ...outboundScreens.map(s => ({ type: "SCREEN", title: s.title, description: s.description || "User view" }))
-            );
+                // Filter screens and mark as used
+                const outboundScreens = screens.filter(s => 
+                    !usedScreenIds.has(s.id) &&
+                    s.dependencies?.some(d => d.elementType === 'READMODEL' && (d.id === primaryReadModel.id || d.type === 'INBOUND'))
+                );
+                outboundScreens.forEach(s => usedScreenIds.add(s.id));
 
-            if (isTodoListProjection) {
-                 // Add the completion event to the flow array (needed for the flow visualization logic below)
-                 flow.push(
-                     ...todoEvents.map(e => ({ 
-                         type: "EVENT", 
-                         title: e.title, 
-                         description: `Event that completes/removes an item from ${primaryReadModel.title}`
-                     }))
-                 );
-                 
-                 // Change the warning to an interpreter note on the pattern
-                 result.warnings.push(`INTERPRETER NOTE: ReadModel "${primaryReadModel.title}" is a **To-Do List Projection**, consuming at least two events: an ADD event (${inboundEvents.map(e => e.title).join(", ")}) and a REMOVE/DONE event (${todoEvents.map(e => e.title).join(", ")} via OUTBOUND back-link to ReadModel).`);
-            }
+                // To-Do List Projection check
+                isTodoListProjection = inboundEvents.length > 0 && outboundEvents.length > 0;
+                todoEvents = outboundEvents;
 
-            // Detailed ReadModel info for output
-            if (primaryReadModel) {
-                const consumedEvents = primaryReadModel.dependencies
-                    .filter(d => d.elementType === 'EVENT' && d.type === 'INBOUND')
-                    .map(d => d.elementTitle);
+                const rmDescription = isTodoListProjection 
+                    ? "State projection / **TODO list (Two-event pattern)**"
+                    : "State projection / User view";
+                const rmTitle = primaryReadModel.title;
+                const rmDisplayTitle = isTodoListProjection ? `**TODO:** ${rmTitle}` : rmTitle;
+
+                // Build flow
+                flow.push(
+                    ...inboundEvents.map(e => ({ type: "EVENT", title: e.title, description: e.description || "Event that populates the read model" })),
+                    { type: "READMODEL", title: rmDisplayTitle, description: rmDescription },
+                    ...outboundScreens.map(s => ({ type: "SCREEN", title: s.title, description: s.description || "User view" }))
+                );
+
+                if (isTodoListProjection && todoEvents.length > 0) {
+                    flow.push(
+                        ...todoEvents.map(e => ({ type: "EVENT", title: e.title, description: `Event that removes/completes items from ${primaryReadModel.title}` }))
+                    );
+                    result.warnings.push(
+                        `ReadModel "${primaryReadModel.title}" is a **To-Do List Projection** with ` +
+                        `${inboundEvents.length} ADD event(s): [${inboundEvents.map(e => e.title).join(", ")}] and ` +
+                        `${todoEvents.length} REMOVE/DONE event(s): [${todoEvents.map(e => e.title).join(", ")}]`
+                    );
+                }
 
                 readmodelDetails = {
                     exists: true,
-                    eventsSubscribedTo: consumedEvents.join(", ") || "(none)",
+                    inboundEvents: inboundEvents.map(e => e.title).join(", ") || "(none)",
+                    outboundEvents: outboundEvents.map(e => e.title).join(", ") || "(none)",
+                    eventsSubscribedTo: inboundEvents.map(e => e.title).join(", ") || "(none)",
                     consumer: outboundScreens.map(s => s.title).join(", ") || "(none)",
-                    todoList: isTodoListProjection
+                    todoList: isTodoListProjection,
+                    totalInboundEvents: inboundEvents.length,
+                    totalOutboundEvents: outboundEvents.length
                 };
-            }
-        }
-        else if (slice.sliceType === 'STATE_CHANGE') {
-            
-            // Determine if this slice contains a "Completion Event"
-            // We'll use case-insensitive checks for 'Prepared' or 'Completed' in commands or events.
-            const isCompletionSlice = commands.some(c => c.title.toLowerCase().includes('prepared') || c.title.toLowerCase().includes('mark')) 
-                                         || events.some(e => e.title.toLowerCase().includes('prepared') || e.title.toLowerCase().includes('completed'));
 
-            // Standard Command/Event flow: Screen (inbound) -> Command -> Event (outbound)
+                if (inboundEvents.length === 0) {
+                    result.warnings.push(
+                        `STATE_VIEW slice "${slice.title}" ReadModel "${primaryReadModel.title}" has no inbound events.`
+                    );
+                }
+            }
+        } else if (slice.sliceType === 'STATE_CHANGE') {
+            const isCompletionSlice = commands.some(c => c.title.toLowerCase().includes('prepared') || c.title.toLowerCase().includes('mark') || c.title.toLowerCase().includes('complete'))
+                || events.some(e => e.title.toLowerCase().includes('prepared') || e.title.toLowerCase().includes('completed'));
+
             flow.push(
-                ...screens.map(s => ({ type: "SCREEN", title: s.title, description: s.description || "User sees screen" })),
+                ...screens.map(s => ({ type: "SCREEN", title: s.title, description: s.description || "User interface" })),
                 ...commands.map(c => ({ type: "COMMAND", title: c.title, description: c.description || "Command executed" })),
-                // CRITICAL CHANGE: Annotate the event if this is a completion slice
                 ...events.map(e => {
                     let title = e.title;
-                    // Only annotate the event that likely completes the item
+                    let description = e.description || "Event triggered";
                     if (isCompletionSlice && (e.title.toLowerCase().includes('prepared') || e.title.toLowerCase().includes('completed'))) {
                         title = `**${e.title} (Completes To-Do List Item)**`;
+                        description = "Completion event - marks item as done";
                     }
-                    return { type: "EVENT", title: title, description: e.description || "Event triggered" };
+                    return { type: "EVENT", title, description };
                 })
             );
-        } 
-        
-        // **********************************************
-        // CRITICAL ADDITION: Handle 'AUTOMATION' slice type
-        // **********************************************
-        else if (slice.sliceType === 'AUTOMATION') { 
-             
-            // Flow: External Event (inbound) -> Command -> Event (outbound)
-            // No screens are expected in a pure automation slice
+        } else {
             flow.push(
-                // In an automation flow, the external event acts as the trigger (like a screen/command initiation)
-                ...events.filter(e => e.dependencies.some(d => d.type === 'EXTERNAL')).map(e => ({ 
-                    type: "EVENT", 
-                    title: `**EXTERNAL:** ${e.title}`, // Mark the triggering event
-                    description: e.description || "External system trigger" 
-                })),
-                ...commands.map(c => ({ type: "COMMAND", title: c.title, description: c.description || "System Command executed" })),
-                ...events.filter(e => !e.dependencies.some(d => d.type === 'EXTERNAL')).map(e => ({ 
-                    type: "EVENT", 
-                    title: e.title, 
-                    description: e.description || "System Event triggered" 
-                }))
+                ...screens.map(s => ({ type: "SCREEN", title: s.title, description: s.description || "" })),
+                ...commands.map(c => ({ type: "COMMAND", title: c.title, description: c.description || "" })),
+                ...events.map(e => ({ type: "EVENT", title: e.title, description: e.description || "" }))
             );
-            
-            result.warnings.push(`INTERPRETER NOTE: Slice "${slice.title || 'Unknown'}" is an **AUTOMATION** slice, triggered by an external event.`);
-        } 
-        // **********************************************
-        
-        else {
-             // Fallback/Legacy Flow (use what's available)
-             flow.push(
-                 ...screens.map(s => ({ type: "SCREEN", title: s.title })),
-                 ...commands.map(c => ({ type: "COMMAND", title: c.title })),
-                 ...events.map(e => ({ type: "EVENT", title: e.title }))
-             );
-             result.warnings.push(`Slice "${slice.title || 'Unknown'}" has unknown/unhandled sliceType: ${slice.sliceType}.`);
+            if (slice.sliceType) result.warnings.push(`Slice "${slice.title}" has unhandled sliceType: ${slice.sliceType}`);
         }
 
-        // --- Visual Flow String Generation (with To-Do List Fix) ---
-        // ... (This section remains largely the same, but the 'AUTOMATION' slice will use the Generic Flow construction.)
+        // --- Visual Flow ---
         let visualFlow = "";
-        
         if (slice.sliceType === 'STATE_VIEW' && isTodoListProjection && primaryReadModel && todoEvents.length > 0) {
-            // MANUAL CONSTRUCTION for To-Do List Pattern: A ➜ B ⇠ C ➜ D
-            
             const rmTitle = primaryReadModel.title;
             const rmDisplayTitle = `**TODO:** ${rmTitle}`;
-            const completionEventTitle = todoEvents[0].title;
-            
-            // Gather element titles for forward/backward flow, excluding the completion event from the initial pass
+            const completionEventTitles = todoEvents.map(e => e.title).join(", ");
             const flowTitlesSeen = new Set();
             const forwardElements = flow.filter(f => {
-                const isCompletionEvent = todoEvents.some(e => e.title === f.title);
-                const uniqueKey = `${f.type}:${f.title}`; 
-                
-                // Exclude the completion event and ensure uniqueness of other elements
+                const isCompletionEvent = todoEvents.some(e => f.title.includes(e.title));
+                const uniqueKey = `${f.type}:${f.title}`;
                 if (isCompletionEvent || !f.title || flowTitlesSeen.has(uniqueKey)) return false;
-                
                 flowTitlesSeen.add(uniqueKey);
                 return true;
             }).map(f => f.title);
 
-            // Find the index of the Read Model (the center pivot)
             const rmIndex = forwardElements.findIndex(t => t.includes(rmDisplayTitle) || t.includes(rmTitle));
-            
-            if (rmIndex !== -1) {
-                // Split the array around the Read Model
+            if (rmIndex !== -1 && completionEventTitles) {
                 const preRM = forwardElements.slice(0, rmIndex + 1);
                 const postRM = forwardElements.slice(rmIndex + 1);
-                
-                // Build the flow as: Pre-RM ➜ RM **⇠** Completion Event ➜ Post-RM
-                visualFlow = [...preRM, `**⇠** ${completionEventTitle}`, ...postRM].join(" ➜ ");
+                visualFlow = [...preRM, `**⇠** ${completionEventTitles}`, ...postRM].join(" ➜ ");
             } else {
-                // Fallback if the RM title wasn't found (shouldn't happen with correct data)
                 visualFlow = forwardElements.join(" ➜ ");
             }
-            
         } else {
-            // Generic Flow Construction (for STATE_CHANGE, AUTOMATION, and non-To-Do STATE_VIEW)
             const flowTitlesSeen = new Set();
-            visualFlow = flow
-                .filter(f => {
-                    if (!f.title || flowTitlesSeen.has(f.title)) return false;
-                    flowTitlesSeen.add(f.title);
-                    return true;
-                })
-                .map(f => f.title)
-                .join(" ➜ ");
+            visualFlow = flow.filter(f => {
+                if (!f.title || flowTitlesSeen.has(f.title)) return false;
+                flowTitlesSeen.add(f.title);
+                return true;
+            }).map(f => f.title).join(" ➜ ");
         }
 
-
-        // --- Robust BDD tests implementation (Handling all formats) ---
-        // ... (This section remains unchanged as it processes all 'specs' regardless of slice type)
-
+        // --- BDD tests ---
         const bddTests = specs.map(spec => {
-            
-            const mapSteps = (steps) => {
-                // Ensure steps is an array before attempting to map
-                return (steps || []).map(step => {
-                    let fieldsString;
-                    // Check for list data in the 'examples' array
-                    const hasExamples = Array.isArray(step.examples) && step.examples.length > 0;
-                    
-                    // Priority 1: If 'examples' (list data) is present, use the list formatter.
-                    if (hasExamples) {
-                        fieldsString = formatReadModelExamples(step.examples);
-                        
-                        // Check for conflicting data and warn
-                        if (Array.isArray(step.fields) && step.fields.length > 0) {
-                            result.warnings.push(`BDD Specification "${spec.title}" in slice "${slice.title}" step '${step.title}' has data in both 'fields' and 'examples'. Prioritized data in 'examples' and skipped 'fields'.`);
-                        }
-                    } 
-                    // Priority 2: If no 'examples', use the standard fields formatter.
-                    else {
-                        fieldsString = formatFields(step.fields);
+            const mapSteps = (steps) => (steps || []).map(step => {
+                let fieldsString;
+                const hasExamples = Array.isArray(step.examples) && step.examples.length > 0;
+                if (hasExamples) {
+                    fieldsString = formatReadModelExamples(step.examples);
+                    if (Array.isArray(step.fields) && step.fields.length > 0) {
+                        result.warnings.push(`BDD Specification "${spec.title}" step '${step.title}' has both 'fields' and 'examples'. Using 'examples' only.`);
                     }
-
-                    return {
-                        title: step.title,
-                        type: step.type, // Use the type provided (GIVEN, SPEC_EVENT, etc.)
-                        fields: fieldsString
-                    };
-                });
-            };
-
-            return {
-                title: spec.title,
-                comments: spec.comments?.map(c => c.description) || [],
-                given: mapSteps(spec.given),
-                when: mapSteps(spec.when),
-                then: mapSteps(spec.then)
-            };
+                } else fieldsString = formatFields(step.fields);
+                return { title: step.title, type: step.type, fields: fieldsString };
+            });
+            return { title: spec.title, comments: spec.comments?.map(c => c.description) || [], given: mapSteps(spec.given), when: mapSteps(spec.when), then: mapSteps(spec.then) };
         });
 
-
         // Build slice object
-        const sliceObj = {
-            index: index + 1,
-            title: slice.title,
-            sliceType: slice.sliceType,
-            flow,
-            visualFlow,
+        const sliceObj = { index: index + 1, title: slice.title, sliceType: slice.sliceType, flow, visualFlow,
             commands: commands.map(c => ({ title: c.title, description: c.description || "Command executed" })),
-            events: events.map(e => ({ title: e.title, description: e.description || "Event triggered" })),
-            screens: screens.map(s => ({ title: s.title, description: s.description || "User sees screen" })),
-            readmodels: readmodels.map(rm => ({ title: rm.title, description: rm.description || "State projection" })), 
-            readmodelDetails, 
-            bddTests
+            events: internalEvents.map(e => ({ title: e.title, description: e.description || "Event triggered" })),
+            externalEvents: externalEvents.map(e => ({ title: e.title, description: e.description || "External event received" })),
+            screens: screens.map(s => ({ title: s.title, description: s.description || "User interface" })),
+            readmodels: readmodels.map(rm => ({ title: rm.title, description: rm.description || "State projection" })),
+            readmodelDetails, bddTests
         };
 
         result.slices.push(sliceObj);
@@ -335,12 +302,17 @@ export function interpretJson(jsonText) {
     });
 
     // Global summary
+
+    const uniqueScreenIds = new Set();
+data.slices.forEach(slice => (slice.screens || []).forEach(screen => uniqueScreenIds.add(screen.id)));
+
     result.summary = {
         totalSlices: data.slices.length,
         totalCommands: data.slices.reduce((acc, s) => acc + (s.commands?.length || 0), 0),
-        totalEvents: data.slices.reduce((acc, s) => acc + (s.events?.length || 0), 0),
-        totalScreens: data.slices.reduce((acc, s) => acc + (s.screens?.length || 0), 0),
-        totalReadModels: data.slices.reduce((acc, s) => acc + (s.readmodels?.length || 0), 0), 
+        totalEvents: uniqueEventTitles.size,
+        totalExternalEvents: uniqueExternalEventTitles.size,
+        totalScreens: uniqueScreenIds.size,
+        totalReadModels: data.slices.reduce((acc, s) => acc + (s.readmodels?.length || 0), 0),
         totalSpecifications: data.slices.reduce((acc, s) => acc + (s.specifications?.length || 0), 0),
         sliceDetails: sliceSummaries
     };

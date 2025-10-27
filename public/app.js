@@ -1,108 +1,211 @@
-// app.js
 import { interpretJson } from "./interpreter.js";
 import { generateSpecification } from "./specificator.js";
 
 interpretBtn.addEventListener("click", () => {
-    const json = document.getElementById("jsonInput").value;
-    const result = interpretJson(json);
+  const json = document.getElementById("jsonInput").value;
+  const result = interpretJson(json);
 
-    const interpretation = document.getElementById("interpretation");
-    const warningsList = document.getElementById("warningsList");
-    interpretation.innerHTML = "";
+  const interpretation = document.getElementById("interpretation");
+  const warningsList = document.getElementById("warningsList");
 
-    // === Global Summary ===
-    interpretation.innerHTML += `<h3>Global Summary</h3>`;
-    interpretation.innerHTML += `<pre>${JSON.stringify(result.summary, null, 2)}</pre>`;
-    interpretation.innerHTML += `<hr>`;
+  // Clear previous content
+  interpretation.replaceChildren();
+  warningsList.replaceChildren();
 
-    // === System Flow ===
-    if (result.slices.length > 1) {
-        const flowTitles = result.slices
-            .sort((a, b) => a.index - b.index)
-            .map(s => `${s.title} (${s.sliceType})`)
-            .join(' &rarr; ');
-        interpretation.innerHTML += `<h3>System Flow</h3>`;
-        interpretation.innerHTML += `<p class="system-flow">${flowTitles}</p><hr>`;
-    }
+  // === Inject External Event Simulator Slice ===
+  const uniqueExternalEventTitles = new Set();
+  result.slices.forEach(slice => {
+    (slice.externalEvents || []).forEach(e => {
+      uniqueExternalEventTitles.add(
+        e.title.replace(/\*\*EXTERNAL:\*\* /g, "").trim()
+      );
+    });
+  });
 
-    // === Slice Details ===
-    result.slices.forEach(slice => {
-        const typeClass = slice.sliceType.toLowerCase().replace('_', '-');
+  if (uniqueExternalEventTitles.size > 0) {
+    const simulatorSlice = {
+      index: result.slices.length + 1,
+      title: "SIMULATION OF EXTERNAL EVENTS",
+      sliceType: "STATE_CHANGE (Automation)",
+      visualFlow:
+        "**EXTERNAL EVENT** → **SimulateExternalEventCommand** → **Domain Command** → **Domain Event**",
+      screens: [{ title: "External Event Console UI" }],
+      commands: [{ title: "SimulateExternalEventCommand" }],
+      events: [],
+      externalEvents: Array.from(uniqueExternalEventTitles).map(t => ({
+        title: t,
+      })),
+      readmodels: [],
+      bddTests: [],
+      readmodelDetails: null,
+      flow: [],
+    };
+    result.slices.push(simulatorSlice);
+  }
 
-        interpretation.innerHTML += `
-            <div class="slice-header">
-                <h3>Slice ${slice.index}: ${slice.title} 
-                    (<span class="slice-type-${typeClass}">${slice.sliceType}</span>)
-                </h3>
-                <p><strong>Internal Flow:</strong> ${slice.visualFlow}</p>
-            </div>
-            <div class="slice-objects-container">
-                <p><b>Screens:</b> ${(slice.screens || []).map(o => o.title).join(", ") || "(none)"}</p>
-                <p><b>Commands:</b> ${(slice.commands || []).map(o => o.title).join(", ") || "(none)"}</p>
-                <p><b>Events:</b> ${(slice.events || []).map(o => o.title).join(", ") || "(none)"}</p>
-                <p><b>Read Models:</b> ${(slice.readmodels || []).map(o => o.title).join(", ") || "(none)"}</p>
-            </div>
-            <h4 class="bdd-specifications-header">BDD Specifications (${slice.bddTests.length})</h4>
-        `;
+  // === Helper functions ===
+  const createEl = (tag, text, className) => {
+    const el = document.createElement(tag);
+    if (text) el.textContent = text;
+    if (className) el.className = className;
+    return el;
+  };
 
-        if (slice.bddTests.length === 0) {
-            interpretation.innerHTML += `<p class="no-bdd-specs">No BDD specifications for this slice.</p>`;
-        } else {
-            slice.bddTests.forEach(test => {
-                const formatSteps = steps => (steps || []).map(step =>
-                    `<span><i class="bdd-step-title">${step.title}</i> (${step.fields})</span>`
-                ).join("; ");
+  const appendSection = (container, title, content) => {
+    container.append(
+      createEl("h3", title),
+      createEl("pre", typeof content === "string" ? content : JSON.stringify(content, null, 2)),
+      document.createElement("hr")
+    );
+  };
 
-                const comments = (test.comments || []).join(" / ");
-                interpretation.innerHTML += `
-                    <div class="bdd-block">
-                        <h5>${test.title}</h5>
-                        ${comments ? `<p class="bdd-comments">${comments}</p>` : ""}
-                        <p><b>Given:</b> ${formatSteps(test.given)}</p>
-                        <p><b>When:</b> ${formatSteps(test.when)}</p>
-                        <p><b>Then:</b> ${formatSteps(test.then)}</p>
-                    </div>
-                `;
-            });
+  // === Global Summary ===
+  appendSection(interpretation, "Global Summary", result.summary);
+
+  // === System Flow ===
+  if (result.slices.length > 1) {
+    const flowTitles = result.slices
+      .sort((a, b) => a.index - b.index)
+      .map(s => `${s.title} (${s.sliceType})`)
+      .join(" → ");
+
+    interpretation.append(
+      createEl("h3", "System Flow"),
+      createEl("p", flowTitles, "system-flow"),
+      document.createElement("hr")
+    );
+  }
+
+  // === Slice Details ===
+  result.slices.forEach(slice => {
+    const typeClass = slice.sliceType
+      .toLowerCase()
+      .replace(/[\s()]/g, "")
+      .replace("_", "-");
+
+    const sliceHeader = createEl("div", "", "slice-header");
+    sliceHeader.append(
+      createEl(
+        "h3",
+        `Slice ${slice.index}: ${slice.title} (${slice.sliceType})`
+      ),
+      createEl("p", `Internal Flow: ${slice.visualFlow}`)
+    );
+
+    const sliceObjects = createEl("div", "", "slice-objects-container");
+    sliceObjects.append(
+      createEl(
+        "p",
+        `Screens: ${listTitles(slice.screens)}`
+      ),
+      createEl(
+        "p",
+        `Commands: ${listTitles(slice.commands)}`
+      ),
+      createEl(
+        "p",
+        `Events: ${listTitles(slice.events)}`
+      ),
+      createEl(
+        "p",
+        `External Events: ${listTitles(slice.externalEvents)}`
+      ),
+      createEl(
+        "p",
+        `Read Models: ${listTitles(slice.readmodels)}`
+      )
+    );
+
+    interpretation.append(sliceHeader, sliceObjects);
+
+    const bddHeader = createEl(
+      "h4",
+      `BDD Specifications (${slice.bddTests.length})`,
+      "bdd-specifications-header"
+    );
+    interpretation.append(bddHeader);
+
+    if (slice.bddTests.length === 0) {
+      interpretation.append(
+        createEl("p", "No BDD specifications for this slice.", "no-bdd-specs")
+      );
+    } else {
+      slice.bddTests.forEach(test => {
+        const block = createEl("div", "", "bdd-block");
+        block.append(createEl("h5", test.title));
+
+        if (test.comments?.length) {
+          block.append(createEl("p", test.comments.join(" / "), "bdd-comments"));
         }
 
-        interpretation.innerHTML += `<hr>`;
+        block.append(
+          createEl("p", `Given: ${formatSteps(test.given)}`),
+          createEl("p", `When: ${formatSteps(test.when)}`),
+          createEl("p", `Then: ${formatSteps(test.then)}`)
+        );
+
+        interpretation.append(block);
+      });
+    }
+
+    interpretation.append(document.createElement("hr"));
+  });
+
+  // === Warnings ===
+  if (result.warnings.length > 0) {
+    result.warnings.forEach(w => {
+      warningsList.append(createEl("li", w));
     });
+  }
 
-    // === Warnings ===
-    warningsList.innerHTML = "";
-    if (result.warnings.length > 0) {
-        warningsList.innerHTML = result.warnings.map(w => `<li>${w}</li>`).join("");
-    }
+  // === Specification Generation ===
+  const spec = generateSpecification(result);
 
-    // === SPECIFICATION GENERATION ===
-    const spec = generateSpecification(result);
+  // Move AI constraints to top
+  const aiConstraints = spec.developerNotes.shift();
 
-    interpretation.innerHTML += `
-        <h3>🔧 Generated Project Specification</h3>
-        <p>This is the proposed Node.js / browser event-sourced architecture.</p>
-        <pre>${formatFileTree(spec.fileStructure)}</pre>
-        <h4>Developer Notes</h4>
-        <pre>${JSON.stringify(spec.developerNotes, null, 2)}</pre>
-    `;
+  appendSection(
+    interpretation,
+    "🤖 AI Constraints & Self-Verification",
+    aiConstraints
+  );
 
-    if (typeof specifyBtn !== 'undefined') {
-        specifyBtn.disabled = false;
-    }
+  interpretation.append(
+    createEl("h3", "🔧 Generated Project Specification"),
+    createEl("p", "This is the proposed Node.js / browser event-sourced architecture."),
+    createEl("pre", formatFileTree(spec.fileStructure)),
+    createEl("h3", "Other Developer Notes"),
+    createEl("pre", JSON.stringify(spec.developerNotes, null, 2))
+  );
 
-    window.currentInterpretation = result;
+  if (typeof specifyBtn !== "undefined") {
+    specifyBtn.disabled = false;
+  }
+
+  window.currentInterpretation = result;
 });
 
-// === Helper: Format nested file structure for HTML display ===
+// === Helpers ===
+function listTitles(arr) {
+  return (arr || []).map(o => o.title).join(", ") || "(none)";
+}
+
+function formatSteps(steps) {
+  return (steps || [])
+    .map(step => `${step.title} (${step.fields})`)
+    .join("; ");
+}
+
 function formatFileTree(obj, indent = 0) {
-    const pad = "  ".repeat(indent);
-    let str = "";
-    for (const key in obj) {
-        if (typeof obj[key] === "object" && !obj[key].startsWith?.("//")) {
-            str += `${pad}📁 ${key}\n` + formatFileTree(obj[key], indent + 1);
-        } else {
-            str += `${pad}📄 ${key}\n`;
-        }
+  const pad = "  ".repeat(indent);
+  let str = "";
+  for (const key in obj) {
+    const value = obj[key];
+    if (typeof value === "object" && !value?.startsWith?.("//")) {
+      str += `${pad}📁 ${key}\n${formatFileTree(value, indent + 1)}`;
+    } else {
+      str += `${pad}📄 ${key}\n`;
     }
-    return str;
+  }
+  return str;
 }
